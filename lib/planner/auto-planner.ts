@@ -19,6 +19,8 @@ const MAX_OWNED_CONTEXTS = 3;
 const MAX_TOTAL_CONTEXTS = 5;
 const DECEMBER_MONTH_INDEX = 11;
 const INTERNAL_PROJECT_NAME_PATTERNS = [/^L7\s*\|/i, /^LETTERA7\b/i];
+const MAX_FOCUSED_PHASE_HOURS_PER_WEEK = 16;
+const MAX_LIGHT_TOUCH_HOURS_PER_WEEK = 6;
 
 type WorkItem = {
   project: PlannerProject;
@@ -181,7 +183,7 @@ export function generatePlanningProposal(input: PlannerInput): PlannerOutput {
         const safeCapacity = cell.remainingSafeCapacity;
         if (safeCapacity <= 0) continue;
 
-        const proposedHours = roundHours(Math.min(remainingToPlan, safeCapacity));
+        const proposedHours = roundHours(Math.min(remainingToPlan, safeCapacity, getMaxWeeklyChunkHours(item)));
         if (proposedHours <= 0) continue;
 
         cell.proposedNewHours = roundHours(cell.proposedNewHours + proposedHours);
@@ -280,14 +282,28 @@ function buildWorkItems(project: PlannerProject, planningStart: Date): WorkItem[
     }))
     .filter(item => item.remainingHours > 0);
 
-  if (!project.periodic) return phaseItems.sort(compareWorkItems);
+  if (!project.periodic) return phaseItems.sort((a, b) => compareWorkItems(a, b, planningStart));
 
   const monthsRemaining = Math.max(1, DECEMBER_MONTH_INDEX - planningStart.getMonth() + 1);
-  return allocatePeriodicProjectHours(project, project.phases, monthsRemaining).sort(compareWorkItems);
+  return allocatePeriodicProjectHours(project, project.phases, monthsRemaining).sort((a, b) => compareWorkItems(a, b, planningStart));
 }
 
-function compareWorkItems(a: WorkItem, b: WorkItem): number {
-  return complexityWeight(b.complexity) - complexityWeight(a.complexity);
+function compareWorkItems(a: WorkItem, b: WorkItem, planningStart: Date): number {
+  return workItemPriorityScore(b, planningStart) - workItemPriorityScore(a, planningStart);
+}
+
+function workItemPriorityScore(item: WorkItem, planningStart: Date): number {
+  const phaseStart = item.phase.startDate ? parseDate(item.phase.startDate) : null;
+  const phaseEnd = item.phase.endDate ? parseDate(item.phase.endDate) : null;
+  const startsBeforeHorizon = !phaseStart || phaseStart <= addDays(planningStart, 7);
+  const daysUntilEnd = phaseEnd ? Math.max(0, Math.round((phaseEnd.getTime() - planningStart.getTime()) / 86_400_000)) : 90;
+
+  return (
+    (startsBeforeHorizon ? 60 : 0) +
+    Math.max(0, 45 - Math.floor(daysUntilEnd / 7) * 5) +
+    complexityWeight(item.complexity) * 8 +
+    Math.min(20, item.remainingHours / 4)
+  );
 }
 
 function eligibleWeeksForItem(item: WorkItem, weeks: string[]): string[] {
@@ -375,6 +391,13 @@ function roleFitScore(role: ResourceRole, complexity: PhaseComplexity): number {
   if (role === "designer") return complexity === "medium-high" ? 85 : 70;
   if (role === "junior-designer") return complexity === "medium-low" || complexity === "low" ? 60 : 0;
   return 0;
+}
+
+function getMaxWeeklyChunkHours(item: WorkItem): number {
+  if (item.project.periodic || item.complexity === "pm" || item.complexity === "high") {
+    return MAX_LIGHT_TOUCH_HOURS_PER_WEEK;
+  }
+  return MAX_FOCUSED_PHASE_HOURS_PER_WEEK;
 }
 
 function phaseMatchesMonth(phase: PlannerPhase, weekStart: string): boolean {

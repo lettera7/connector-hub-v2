@@ -57,6 +57,7 @@ test("splits a large phase over multiple weeks", () => {
   const catalogAssignments = output.plannedAssignments.filter(assignment => assignment.phaseId === "catalog-delivery");
   const weeks = new Set(catalogAssignments.map(assignment => assignment.weekStart));
   assert.ok(weeks.size > 1);
+  assert.equal(catalogAssignments.every(assignment => assignment.proposedHours <= 16), true);
 });
 
 test("distributes periodic projects month by month", () => {
