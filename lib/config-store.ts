@@ -14,9 +14,17 @@ const PATH = join(process.cwd(), ".config.json");
 
 export function readConfig(): AppConfig {
   try {
-    if (!existsSync(PATH)) return {};
-    return JSON.parse(readFileSync(PATH, "utf-8"));
+    if (existsSync(PATH)) return JSON.parse(readFileSync(PATH, "utf-8"));
   } catch { return {}; }
+
+  const ficAccessToken = process.env.FIC_ACCESS_TOKEN;
+  const ficCompanyId = process.env.FIC_COMPANY_ID;
+  const floatApiKey = process.env.FLOAT_API_KEY;
+
+  return {
+    fic: ficAccessToken && ficCompanyId ? { accessToken: ficAccessToken, companyId: ficCompanyId } : undefined,
+    float: floatApiKey ? { apiKey: floatApiKey } : undefined,
+  };
 }
 
 export function writeConfig(cfg: AppConfig): void {
