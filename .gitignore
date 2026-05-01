@@ -9,3 +9,5 @@ tsconfig.tsbuildinfo
 .dismissed.json
 .env
 .env.local
+.vercel
+.env*.local
