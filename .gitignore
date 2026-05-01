@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.DS_Store
+tsconfig.tsbuildinfo
+.config.json
+.targets.json
+.mappings.json
+.dismissed.json
+.env
+.env.local
