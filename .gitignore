@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.test-build/
 .DS_Store
 tsconfig.tsbuildinfo
 .config.json
