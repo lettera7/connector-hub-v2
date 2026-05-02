@@ -21,6 +21,7 @@ export interface FloatRawPerson {
   active: 0 | 1 | boolean; employee_type: 1 | 2 | 3;
   avatar_file: string | null; default_hourly_rate: number | null;
   work_days_hours: Record<string, number> | null;
+  tags?: Array<{ tag_id: number; name: string }> | string[];
 }
 export interface FloatRawProjectTeam { project_id: number; people_id: number; }
 export interface FloatRawPhase {
@@ -60,6 +61,7 @@ export interface PlanningProject {
 export interface UpcomingTimeOff { startDate: string; endDate: string; daysUntil: number; }
 export interface PersonLoad {
   personId: number; personName: string; role: string | null; department: string | null;
+  skillTags: string[];
   weeklyCapacityHours: number;
   activeProjectCount: number; periodicProjectCount: number;
   ownerProjectCount: number; supportProjectCount: number;
@@ -90,6 +92,7 @@ export interface ResourceAvailability {
   personName: string;
   role: string | null;
   department: string | null;
+  skillTags: string[];
   status: LoadStatus;
   statusReason: string;
   weeklyCapacityHours: number;

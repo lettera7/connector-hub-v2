@@ -17,10 +17,26 @@ const DEFAULT_HORIZON_WEEKS = 8;
 const HARD_CAPACITY_LIMIT = 0.85;
 const MAX_OWNED_CONTEXTS = 3;
 const MAX_TOTAL_CONTEXTS = 5;
-const DECEMBER_MONTH_INDEX = 11;
 const INTERNAL_PROJECT_NAME_PATTERNS = [/^L7\s*\|/i, /^LETTERA7\b/i];
-const MAX_FOCUSED_PHASE_HOURS_PER_WEEK = 16;
+const MIN_FOCUSED_PHASE_HOURS_PER_WEEK = 24;
+const MAX_FOCUSED_PHASE_HOURS_PER_WEEK = 32;
 const MAX_LIGHT_TOUCH_HOURS_PER_WEEK = 6;
+const BRAND_CONSULTING_MONTHLY_HOURS = 1;
+const LUCA_NAME_PATTERN = /^luca\b/i;
+const MONTH_ALIASES = [
+  ["gennaio", "jan", "january", "gen"],
+  ["febbraio", "feb", "february"],
+  ["marzo", "mar", "march"],
+  ["aprile", "apr", "april"],
+  ["maggio", "mag", "may"],
+  ["giugno", "giu", "jun", "june"],
+  ["luglio", "lug", "jul", "july"],
+  ["agosto", "ago", "aug", "august"],
+  ["settembre", "set", "sep", "sept", "september"],
+  ["ottobre", "ott", "oct", "october"],
+  ["novembre", "nov", "november"],
+  ["dicembre", "dic", "dec", "december"],
+] as const;
 
 type WorkItem = {
   project: PlannerProject;
@@ -78,7 +94,9 @@ export function calculateResidualHours(phase: Pick<PlannerPhase, "budgetHours" |
 export function inferPhaseComplexity(phase: Pick<PlannerPhase, "name" | "complexity">): PhaseComplexity {
   if (phase.complexity) return phase.complexity;
   const name = phase.name.toLowerCase();
-  if (/(pm|admin|amministrazione|setup|pianificazione|coordinamento)/i.test(name)) return "pm";
+  if (isBrandConsultingPhaseName(name)) return "low";
+  if (isSetupPlanningPhaseName(name)) return "low";
+  if (/(pm|admin|amministrazione|coordinamento)/i.test(name)) return "pm";
   if (/(strategy|strategia|concept|creative direction|direzione creativa|review|revisione)/i.test(name)) return "high";
   if (/(design system|packaging|visual design|identity|identità|brand)/i.test(name)) return "medium-high";
   if (/(execution|esecutiv|refinement|rifinitur|delivery|consegna|adaptation|adattament)/i.test(name)) return "medium-low";
@@ -105,6 +123,14 @@ export function getRoleBasedCandidateResources(
   project: PlannerProject,
   resources: PlannerResource[],
 ): PlannerResource[] {
+  if (isBrandConsultingPhase(phase)) {
+    return getProjectBoundCandidateResources(project, resources);
+  }
+
+  if (isSetupPlanningPhase(phase)) {
+    return getSetupPlanningCandidateResources(project, resources);
+  }
+
   const complexity = inferPhaseComplexity(phase);
   const preferredIds = [project.ownerResourceId, ...project.teamResourceIds].filter(Boolean) as string[];
   const ordered = [
@@ -114,12 +140,10 @@ export function getRoleBasedCandidateResources(
   return ordered.filter(resource => canResourceWorkOnPhase(resource, complexity, phase));
 }
 
-export function allocatePeriodicProjectHours(project: PlannerProject, phases: PlannerPhase[], monthsRemaining: number): WorkItem[] {
-  const periodicMonthLimit = Math.max(1, monthsRemaining);
+export function allocatePeriodicProjectHours(project: PlannerProject, phases: PlannerPhase[], _monthsRemaining: number): WorkItem[] {
   return phases
     .map(phase => ({ project, phase, remainingHours: calculateResidualHours(phase), complexity: inferPhaseComplexity(phase) }))
-    .filter(item => item.remainingHours > 0)
-    .map(item => ({ ...item, remainingHours: roundHours(item.remainingHours / periodicMonthLimit) }));
+    .filter(item => item.remainingHours > 0);
 }
 
 export function buildPhaseLevelPlanningProposal(input: PlannerInput): PlannerOutput {
@@ -284,8 +308,7 @@ function buildWorkItems(project: PlannerProject, planningStart: Date): WorkItem[
 
   if (!project.periodic) return phaseItems.sort((a, b) => compareWorkItems(a, b, planningStart));
 
-  const monthsRemaining = Math.max(1, DECEMBER_MONTH_INDEX - planningStart.getMonth() + 1);
-  return allocatePeriodicProjectHours(project, project.phases, monthsRemaining).sort((a, b) => compareWorkItems(a, b, planningStart));
+  return allocatePeriodicProjectHours(project, project.phases, 1).sort((a, b) => compareWorkItems(a, b, planningStart));
 }
 
 function compareWorkItems(a: WorkItem, b: WorkItem, planningStart: Date): number {
@@ -315,6 +338,15 @@ function eligibleWeeksForItem(item: WorkItem, weeks: string[]): string[] {
     return (!phaseStart || weekEnd >= phaseStart) && (!phaseEnd || week <= phaseEnd);
   });
 
+  if (isSetupPlanningPhase(item.phase)) {
+    return getAnchorWeeks(filtered);
+  }
+
+  if (isBrandConsultingPhase(item.phase)) {
+    // Relationship consulting is a low-touch cadence: one touchpoint per month inside the active phase range.
+    return getMonthlyAnchorWeeks(filtered);
+  }
+
   if (!item.project.periodic) return filtered;
 
   // Periodic projects should progress month by month instead of consuming all hours immediately.
@@ -322,8 +354,10 @@ function eligibleWeeksForItem(item: WorkItem, weeks: string[]): string[] {
   return filtered.filter(weekStart => {
     const monthKey = weekStart.slice(0, 7);
     if (seenMonths.has(monthKey)) return false;
+    const matchesMonth = phaseMatchesMonth(item.phase, weekStart);
+    if (!matchesMonth && hasMonthlyPhaseForProject(item.project, weekStart)) return false;
     seenMonths.add(monthKey);
-    return phaseMatchesMonth(item.phase, weekStart) || !hasMonthlyPhaseForProject(item.project, weekStart);
+    return true;
   });
 }
 
@@ -371,6 +405,8 @@ function getContextState(resource: PlannerResource, cell: MutableCapacity, proje
 }
 
 function canResourceWorkOnPhase(resource: PlannerResource, complexity: PhaseComplexity, phase: PlannerPhase): boolean {
+  if (isBrandConsultingPhase(phase)) return false;
+  if (isSetupPlanningPhase(phase)) return false;
   if (resource.role === "creative-director") return isCreativeDirectionPhase(phase);
   if (resource.role === "pm-admin") return complexity === "pm";
   if (complexity === "pm") return false;
@@ -394,21 +430,103 @@ function roleFitScore(role: ResourceRole, complexity: PhaseComplexity): number {
 }
 
 function getMaxWeeklyChunkHours(item: WorkItem): number {
-  if (item.project.periodic || item.complexity === "pm" || item.complexity === "high") {
+  if (isBrandConsultingPhase(item.phase)) {
+    return BRAND_CONSULTING_MONTHLY_HOURS;
+  }
+  if (isSetupPlanningPhase(item.phase) || item.complexity === "pm" || item.complexity === "high") {
     return MAX_LIGHT_TOUCH_HOURS_PER_WEEK;
   }
-  return MAX_FOCUSED_PHASE_HOURS_PER_WEEK;
+  if (item.complexity === "medium-low" || item.complexity === "medium-high") {
+    return MAX_FOCUSED_PHASE_HOURS_PER_WEEK;
+  }
+  return MIN_FOCUSED_PHASE_HOURS_PER_WEEK;
 }
 
 function phaseMatchesMonth(phase: PlannerPhase, weekStart: string): boolean {
-  const monthName = new Intl.DateTimeFormat("it-IT", { month: "long" })
-    .format(parseDate(weekStart))
-    .toLowerCase();
-  return phase.name.toLowerCase().includes(monthName) || phase.name.includes(weekStart.slice(0, 7));
+  const week = parseDate(weekStart);
+  const weekEnd = addDays(week, 6);
+  const phaseStart = phase.startDate ? parseDate(phase.startDate) : null;
+  const phaseEnd = phase.endDate ? parseDate(phase.endDate) : null;
+
+  if (phaseStart || phaseEnd) {
+    const start = phaseStart ?? phaseEnd;
+    const end = phaseEnd ?? phaseStart;
+    return Boolean(start && end && start <= weekEnd && end >= week);
+  }
+
+  const monthIndex = week.getMonth();
+  const phaseName = normalizeText(phase.name);
+  return MONTH_ALIASES[monthIndex].some(alias => new RegExp(`(^|\\s)${escapeRegExp(alias)}(\\s|$)`, "i").test(phaseName))
+    || phase.name.includes(weekStart.slice(0, 7));
 }
 
 function hasMonthlyPhaseForProject(project: PlannerProject, weekStart: string): boolean {
   return project.phases.some(phase => phaseMatchesMonth(phase, weekStart));
+}
+
+function getSetupPlanningCandidateResources(project: PlannerProject, resources: PlannerResource[]): PlannerResource[] {
+  const owner = project.ownerResourceId ? resources.find(resource => resource.id === project.ownerResourceId) : null;
+  const luca = resources.find(resource => LUCA_NAME_PATTERN.test(resource.name) || resource.role === "pm-admin");
+  return [owner, luca]
+    .filter(isPresent)
+    .filter((resource, index, candidates) => candidates.findIndex(candidate => candidate.id === resource.id) === index);
+}
+
+function getProjectBoundCandidateResources(project: PlannerProject, resources: PlannerResource[]): PlannerResource[] {
+  const projectResourceIds = [project.ownerResourceId, ...project.teamResourceIds].filter(isPresent);
+  return projectResourceIds
+    .map(resourceId => resources.find(resource => resource.id === resourceId))
+    .filter(isPresent)
+    .filter((resource, index, candidates) => candidates.findIndex(candidate => candidate.id === resource.id) === index);
+}
+
+function getAnchorWeeks(weeks: string[]): string[] {
+  if (weeks.length <= 2) return weeks;
+  const middleIndex = Math.floor((weeks.length - 1) / 2);
+  const anchors = [weeks[0], weeks[middleIndex], weeks[weeks.length - 1]];
+  return anchors.filter((week, index) => anchors.indexOf(week) === index);
+}
+
+function getMonthlyAnchorWeeks(weeks: string[]): string[] {
+  const anchors: string[] = [];
+  const seenMonths = new Set<string>();
+  for (const week of weeks) {
+    const monthKey = week.slice(0, 7);
+    if (seenMonths.has(monthKey)) continue;
+    seenMonths.add(monthKey);
+    anchors.push(week);
+  }
+  return anchors;
+}
+
+function isBrandConsultingPhase(phase: PlannerPhase): boolean {
+  return isBrandConsultingPhaseName(phase.name);
+}
+
+function isBrandConsultingPhaseName(name: string): boolean {
+  return normalizeText(name).includes("consulenza on brand");
+}
+
+function isSetupPlanningPhase(phase: PlannerPhase): boolean {
+  return isSetupPlanningPhaseName(phase.name);
+}
+
+function isSetupPlanningPhaseName(name: string): boolean {
+  return /(setup|set up|pianificazione|planning|kickoff|kick-off|avvio progetto)/i.test(name);
+}
+
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function buildPhaseSummary(item: WorkItem, plannedHours: number): PlannedPhaseSummary {

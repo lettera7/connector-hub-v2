@@ -128,6 +128,11 @@ export async function fetchPeople(apiKey: string): Promise<FloatRawPerson[]> {
     avatar_file: r.avatar_file != null ? String(r.avatar_file) : null,
     default_hourly_rate: r.default_hourly_rate != null ? Number(r.default_hourly_rate) : null,
     work_days_hours: r.work_days_hours != null ? (r.work_days_hours as Record<string, number>) : null,
+    tags: Array.isArray(r.tags) ? r.tags.map((t: unknown) =>
+      typeof t === "object" && t != null
+        ? { tag_id: Number((t as Record<string,unknown>).tag_id ?? 0), name: String((t as Record<string,unknown>).name ?? "") }
+        : { tag_id: 0, name: String(t) }
+    ) : [],
   }));
 }
 

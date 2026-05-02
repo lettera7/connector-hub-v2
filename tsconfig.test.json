@@ -12,5 +12,5 @@
     "incremental": false,
     "tsBuildInfoFile": ".test-build/tsconfig.test.tsbuildinfo"
   },
-  "include": ["lib/planner/**/*.ts", "tests/**/*.test.ts"]
+  "include": ["lib/planner/**/*.ts", "lib/planning/**/*.ts", "tests/**/*.test.ts"]
 }

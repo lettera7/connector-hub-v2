@@ -23,6 +23,7 @@ const OWNER_WEEKLY_LOAD = { active: 12, tentative: 8, periodic: 4 };
 const SUPPORT_WEEKLY_LOAD = { active: 8, tentative: 5, periodic: 2 };
 const LUCA_PILOT_NAME = "luca";
 const FALLBACK_PILOT_HOURS = 6;
+const BRAND_CONSULTING_MONTHLY_HOURS = 1;
 
 type PhaseComplexity = "high" | "medium-high" | "medium-low" | "low";
 type ResourceRole = "creative-director" | "senior-designer" | "middle-senior-designer" | "designer" | "apprentice-designer" | "pm-admin" | "unknown";
@@ -47,6 +48,7 @@ type CandidateResource = {
   role: ResourceRole;
   score: number;
   continuity: boolean;
+  skillScore: number;
 };
 type PhaseWorkItem = {
   project: PlanningProject;
@@ -177,6 +179,8 @@ function normalizeText(value: string | null | undefined): string {
   return String(value ?? "")
     .trim()
     .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\w\s]/g, "")
     .replace(/\s+/g, " ");
 }
@@ -289,6 +293,7 @@ function buildResourceAvailability(
       personName: person.personName,
       role: person.role,
       department: person.department,
+      skillTags: person.skillTags,
       status: person.status,
       statusReason: person.statusReason,
       weeklyCapacityHours: capacity,
@@ -602,6 +607,7 @@ function enrichProjectsWithCommercial(
 
 export function inferPhaseComplexity(phase: PlanningPhase | null): PhaseComplexity {
   const label = normalizeText(phase?.name);
+  if (isBrandConsultingPhase(phase)) return "low";
   if (/strategy|concept|creative direction|direzione creativa|review|revisione/.test(label)) return "high";
   if (/design system|packaging|visual design|brand|identity|identita|capostipi/.test(label)) return "medium-high";
   if (/execution|refinement|refinements|delivery|adaptation|declinazioni|esecutivi|adattamenti|finalizzazione/.test(label)) return "medium-low";
@@ -618,6 +624,55 @@ function resourceRole(resource: ResourceAvailability): ResourceRole {
   if (name.includes("stefano")) return "apprentice-designer";
   if (name.includes("luca")) return "pm-admin";
   return "unknown";
+}
+
+function extractTags(rawTags: FloatRawPerson["tags"] | PlanningProject["tags"] | null | undefined): string[] {
+  if (!Array.isArray(rawTags)) return [];
+  return rawTags
+    .map(tag => typeof tag === "object" && tag != null ? tag.name : String(tag))
+    .map(normalizeText)
+    .filter(Boolean);
+}
+
+function inferPersonSkillTags(person: Pick<FloatRawPerson, "job_title" | "department" | "tags">): string[] {
+  const department = typeof person.department === "object" && person.department != null
+    ? person.department.name
+    : person.department;
+  const source = [person.job_title, department, ...extractTags(person.tags)].map(normalizeText).join(" ");
+  const tags = new Set<string>();
+  if (/creative|art director|direzione|strategy|strategia|concept/.test(source)) tags.add("creative-direction");
+  if (/senior|lead|owner/.test(source)) tags.add("senior");
+  if (/brand|identity|identita|visual/.test(source)) tags.add("brand-design");
+  if (/packaging|pack/.test(source)) tags.add("packaging");
+  if (/design system|system/.test(source)) tags.add("design-system");
+  if (/execution|esecutiv|delivery|adaptation|adattament|declinazioni/.test(source)) tags.add("execution");
+  if (/pm|project|admin|amministrazione|planning|pianificazione|account|cliente|client|relazione|consult/.test(source)) tags.add("pm-client");
+  return Array.from(tags);
+}
+
+function requiredPhaseSkillTags(phase: PlanningPhase | null, project: PlanningProject, complexity: PhaseComplexity): string[] {
+  const source = normalizeText(`${phase?.name ?? ""} ${project.name} ${project.tags.join(" ")}`);
+  const required = new Set<string>();
+  if (isBrandConsultingPhase(phase)) required.add("pm-client").add("brand-design");
+  if (/strategy|strategia|concept|creative direction|direzione creativa|review|revisione/.test(source)) required.add("creative-direction");
+  if (/design system/.test(source)) required.add("design-system");
+  if (/packaging|pack/.test(source)) required.add("packaging");
+  if (/brand|identity|identita|visual|capostipi/.test(source)) required.add("brand-design");
+  if (/execution|refinement|refinements|delivery|adaptation|declinazioni|esecutivi|adattamenti|finalizzazione/.test(source)) required.add("execution");
+  if (/admin|amministrazione|setup|pianificazione|coordinamento|coordination|pm|call|meeting/.test(source)) required.add("pm-client");
+  if (required.size === 0 && complexity === "medium-low") required.add("execution");
+  if (required.size === 0 && complexity === "medium-high") required.add("brand-design");
+  if (required.size === 0 && complexity === "high") required.add("creative-direction");
+  return Array.from(required);
+}
+
+function skillFitScore(resource: ResourceAvailability, phase: PlanningPhase | null, project: PlanningProject, complexity: PhaseComplexity): number {
+  if (resource.skillTags.length === 0) return 0;
+  const required = requiredPhaseSkillTags(phase, project, complexity);
+  if (required.length === 0) return 0;
+  const matches = required.filter(tag => resource.skillTags.includes(tag)).length;
+  if (matches > 0) return 12 + matches * 8;
+  return -12;
 }
 
 function roleFitScore(role: ResourceRole, complexity: PhaseComplexity): number {
@@ -666,6 +721,10 @@ function isPeriodicNamedProject(project: PlanningProject): boolean {
 function isMonthlyDilutedPhase(phase: PlanningPhase | null): boolean {
   const name = normalizeText(phase?.name);
   return /setup|pianificazione|consulenza on brand/.test(name);
+}
+
+function isBrandConsultingPhase(phase: PlanningPhase | null): boolean {
+  return normalizeText(phase?.name).includes("consulenza on brand");
 }
 
 function monthKeyFromDate(value: string): string {
@@ -784,12 +843,17 @@ export function getRoleBasedCandidateResources(
     .filter((resource): resource is ResourceAvailability => resource != null);
   const unique = new Map<number, CandidateResource>();
 
-  const addCandidate = (resource: ResourceAvailability, allocationRole: PlanningAllocationPreview["allocationRole"]) => {
+  const addCandidate = (
+    resource: ResourceAvailability,
+    allocationRole: PlanningAllocationPreview["allocationRole"],
+    options: { skipRoleEligibility?: boolean } = {},
+  ) => {
     const role = resourceRole(resource);
-    if (!isRoleEligibleForPhase(role, phase, complexity)) return;
+    if (!options.skipRoleEligibility && !isRoleEligibleForPhase(role, phase, complexity)) return;
     const contexts = computeResourceContextState(resource, people);
     const continuity = resource.timeline.some(cell => cell.projectNames.includes(project.name));
-    let score = roleFitScore(role, complexity);
+    const skillScore = skillFitScore(resource, phase, project, complexity);
+    let score = roleFitScore(role, complexity) + skillScore;
     if (!isMainExecutionRole(role)) score -= 20;
     if (allocationRole === "owner") score += 20;
     if (continuity) score += 18;
@@ -797,12 +861,20 @@ export function getRoleBasedCandidateResources(
     score -= contexts.totalActiveContexts * 5;
     if (contexts.ownershipCount >= 3 && allocationRole === "owner") score -= 80;
     if (contexts.totalActiveContexts >= 5 && !continuity) score -= 70;
-    unique.set(resource.personId, { resource, allocationRole, role, score, continuity });
+    unique.set(resource.personId, { resource, allocationRole, role, score, continuity, skillScore });
   };
 
   if (owner) addCandidate(owner, "owner");
   for (const resource of team) {
     addCandidate(resource, resource.personId === ownerId ? "owner" : "team");
+  }
+  if (isBrandConsultingPhase(phase)) {
+    unique.clear();
+    if (owner) addCandidate(owner, "owner", { skipRoleEligibility: true });
+    for (const resource of team) {
+      addCandidate(resource, resource.personId === ownerId ? "owner" : "team", { skipRoleEligibility: true });
+    }
+    return Array.from(unique.values()).sort((a, b) => b.score - a.score);
   }
   // If assigned team cannot absorb the remaining hours, allow role-fit fallback resources with lower ranking.
   for (const resource of resources) {
@@ -1039,7 +1111,11 @@ export function buildPhaseLevelPlanningProposal(
     }
     const occupiedHours = resource.weeklyCapacityHours - slot.freeHours;
     const warningCapacityLeft = Math.max(0, resource.weeklyCapacityHours * WARNING_SATURATION - occupiedHours);
-    const monthlyMaxHours = monthlyDiluted ? Math.ceil(item.remainingHours / eligibleMonthsForItem(item) * 100) / 100 : maxHours;
+    const monthlyMaxHours = isBrandConsultingPhase(item.phase)
+      ? BRAND_CONSULTING_MONTHLY_HOURS
+      : monthlyDiluted
+        ? Math.ceil(item.remainingHours / eligibleMonthsForItem(item) * 100) / 100
+        : maxHours;
     const proposedHours = Math.min(maxHours, monthlyMaxHours, slot.freeHours, warningCapacityLeft, dateRange.workingDays * 4, maxRoleWeeklyHours(candidate.role));
     if (proposedHours < 1) return 0;
     const capacity = computeResourceCapacityState(resource, occupiedHours, proposedHours);
@@ -1245,6 +1321,7 @@ export function buildPersonLoads(
 
       return {
         personId: pid, personName: p.name, role: p.job_title, department: dept,
+        skillTags: inferPersonSkillTags(p),
         weeklyCapacityHours,
         activeProjectCount: allActive.length, periodicProjectCount: periodic.length,
         ownerProjectCount: ownerProjects.length, supportProjectCount: teamProjects.filter(pr => pr.status === "active").length,
